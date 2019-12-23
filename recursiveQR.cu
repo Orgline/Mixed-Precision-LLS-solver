@@ -22,6 +22,97 @@ struct F4add
     return c;
     }
 };
+
+float ms_cusolver = 0;
+
+int GEQRF8( cudaCtxt ctxt, int m, int n, float *A, int lda, float *R, int ldr, float *work, int lwork )
+{
+	using namespace std;
+	int info;
+	cudaEvent_t start, stop;
+	cudaEventCreate(&start);
+	cudaEventCreate(&stop);
+
+	//TODO: move this out
+	int *devInfo;
+	cudaMalloc( &devInfo, sizeof(int) );
+	
+	cudaEventRecord(start);
+    cusolverStatus_t cusolver_status = cusolverDnSgeqrf(
+        ctxt.cusolver_handle, 
+        m, 
+        n, 
+        A, 
+        lda, 
+        &work[m*n], 
+        &work[m*n+n], 
+        lwork-n-m*n, 
+        devInfo);
+    cudaEventRecord(stop);
+	cudaEventSynchronize(stop);
+	assert(cusolver_status == CUSOLVER_STATUS_SUCCESS);
+	float milliseconds = 0;
+	cuEventElapsedTime(&milliseconds, start, stop);
+	ms_cusolver += milliseconds;
+	dim3 grid1( (n+31)/32, (n+31)/32 );
+	dim3 block1( 32, 32 );
+	myslacpy<<<grid1, block1>>>( n, n, A, lda, R, ldr );
+
+	cudaMemcpy(&info, devInfo, sizeof(int), cudaMemcpyDeviceToHost);
+	// cout << "GEQRF8: sgeqrf ("<< m<<","<<n<<") takes " << milliseconds << " (ms) "; 
+	// cout << "TLOPS/s: " << (2.0*m*n*n - 2.0/3*n*n*n)/milliseconds*1000/1e12; 
+	assert(info == 0);
+
+	// TODO: Move h_B assignment out
+	// float *h_B = (float*) malloc( m*NMIN * sizeof(float) );
+	
+	// for (int j=0; j<NMIN; j++)
+	// 	for (int i=0; i<m ; i++)
+	// 		if (i==j)
+	// 			h_B[i+j*m] = 1.0;
+	// 		else 
+	// 			h_B[i+j*m] = 0.0;
+	// cudaMemcpy( work, h_B, sizeof(float)*m*NMIN, cudaMemcpyHostToDevice);
+	dim3 grid2( (m+1)/32, (NMIN+1)/32 );
+	dim3 block2( 32, 32 );
+	seteye<<<grid2, block2>>>( m, NMIN, work, m );
+	
+	cudaEventRecord(start);
+	cusolver_status= cusolverDnSormqr(
+        ctxt.cusolver_handle, 
+        CUBLAS_SIDE_LEFT, 
+        CUBLAS_OP_N,
+        m, 
+        n,
+        n, 
+        A, 
+        lda,
+        &work[m*n],
+        work,
+        m,
+        &work[m*n+n],
+        lwork-n-m*n,
+        devInfo);
+	
+    // cudaError_t  cudaStat1 = cudaDeviceSynchronize();
+	cudaEventRecord(stop);
+	cudaEventSynchronize(stop);
+	cudaDeviceSynchronize();
+	cuEventElapsedTime(&milliseconds, start, stop);
+	ms_cusolver += milliseconds;
+	cudaMemcpy(&info, devInfo, sizeof(int), cudaMemcpyDeviceToHost);
+	// cout << " sormqr ("<< m<<","<<n<<") takes " << milliseconds << " (ms)" << endl;
+    assert(CUSOLVER_STATUS_SUCCESS == cusolver_status);
+	assert(info==0);
+	
+
+	dim3 grid((m+31)/32, (n+31)/32);
+	dim3 block( 32, 32 );
+	myslacpy<<<grid, block>>>( m, n, work, m, A, lda );
+
+	return info;
+}
+
 // Each TB factorizes a 256*n submatrix; AA will be overwritten with Q, RR overwritten with R.
 // n <= 32. m is supposed to be any number.
 __global__ void geqrf_tb_256x32_multicub(int m, int n, float *AA, int lda, float *RR, int ldr)
@@ -124,94 +215,6 @@ __global__ void geqrf_tb_256x32_multicub(int m, int n, float *AA, int lda, float
                 R[i+j*ldr] = 0;
         }
     }
-}
-
-int GEQRF8( cudaCtxt ctxt, int m, int n, float *A, int lda, float *R, int ldr, float *work, int lwork )
-{
-	using namespace std;
-	int info;
-	cudaEvent_t start, stop;
-	cudaEventCreate(&start);
-	cudaEventCreate(&stop);
-
-	//TODO: move this out
-	int *devInfo;
-	cudaMalloc( &devInfo, sizeof(int) );
-	
-	cudaEventRecord(start);
-    cusolverStatus_t cusolver_status = cusolverDnSgeqrf(
-        ctxt.cusolver_handle, 
-        m, 
-        n, 
-        A, 
-        lda, 
-        &work[m*n], 
-        &work[m*n+n], 
-        lwork-n-m*n, 
-        devInfo);
-    cudaEventRecord(stop);
-	cudaEventSynchronize(stop);
-	assert(cusolver_status == CUSOLVER_STATUS_SUCCESS);
-	float milliseconds = 0;
-	cuEventElapsedTime(&milliseconds, start, stop);
-	ms_cusolver += milliseconds;
-	dim3 grid1( (n+31)/32, (n+31)/32 );
-	dim3 block1( 32, 32 );
-	myslacpy<<<grid1, block1>>>( n, n, A, lda, R, ldr );
-
-	cudaMemcpy(&info, devInfo, sizeof(int), cudaMemcpyDeviceToHost);
-	// cout << "GEQRF8: sgeqrf ("<< m<<","<<n<<") takes " << milliseconds << " (ms) "; 
-	// cout << "TLOPS/s: " << (2.0*m*n*n - 2.0/3*n*n*n)/milliseconds*1000/1e12; 
-	assert(info == 0);
-
-	// TODO: Move h_B assignment out
-	// float *h_B = (float*) malloc( m*NMIN * sizeof(float) );
-	
-	// for (int j=0; j<NMIN; j++)
-	// 	for (int i=0; i<m ; i++)
-	// 		if (i==j)
-	// 			h_B[i+j*m] = 1.0;
-	// 		else 
-	// 			h_B[i+j*m] = 0.0;
-	// cudaMemcpy( work, h_B, sizeof(float)*m*NMIN, cudaMemcpyHostToDevice);
-	dim3 grid2( (m+1)/32, (NMIN+1)/32 );
-	dim3 block2( 32, 32 );
-	seteye<<<grid2, block2>>>( m, NMIN, work, m );
-	
-	cudaEventRecord(start);
-	cusolver_status= cusolverDnSormqr(
-        ctxt.cusolver_handle, 
-        CUBLAS_SIDE_LEFT, 
-        CUBLAS_OP_N,
-        m, 
-        n,
-        n, 
-        A, 
-        lda,
-        &work[m*n],
-        work,
-        m,
-        &work[m*n+n],
-        lwork-n-m*n,
-        devInfo);
-	
-    // cudaError_t  cudaStat1 = cudaDeviceSynchronize();
-	cudaEventRecord(stop);
-	cudaEventSynchronize(stop);
-	cudaDeviceSynchronize();
-	cuEventElapsedTime(&milliseconds, start, stop);
-	ms_cusolver += milliseconds;
-	cudaMemcpy(&info, devInfo, sizeof(int), cudaMemcpyDeviceToHost);
-	// cout << " sormqr ("<< m<<","<<n<<") takes " << milliseconds << " (ms)" << endl;
-    assert(CUSOLVER_STATUS_SUCCESS == cusolver_status);
-	assert(info==0);
-	
-
-	dim3 grid((m+31)/32, (n+31)/32);
-	dim3 block( 32, 32 );
-	myslacpy<<<grid, block>>>( m, n, work, m, A, lda );
-
-	return info;
 }
 
 void CAQR_256x32(cudaCtxt ctxt, int m, int n, float *A, int lda, float *R, int ldr, float *work)
@@ -398,6 +401,8 @@ void CAQR_256x128(cudaCtxt ctxt, int m, int n, float *A, int lda, float *R, int 
     CAQR_256x32(ctxt, m, 32, &A[32*lda], lda, &R[32+32*ldr], ldr, work);
 }
 
+int CAQRFlag = 0;
+
 // recursive QR V2: use the CAQR as panel
 // QR(A): A will be overwritten with Q, and R will be populated.
 // A (in,out): m*n, on device
@@ -418,7 +423,12 @@ int RGEQRF2( cudaCtxt ctxt, int m, int n, float *A, int lda, float *R, int ldr, 
     if (n == 128) 
     {
         // GEQRF8( ctxt, m, n, A, lda, R, ldr, work, lwork );
-        CAQR_256x128( ctxt, m, n, A, lda, R, ldr, work );
+        if(CAQRFlag==1)
+            CAQR_256x128( ctxt, m, n, A, lda, R, ldr, work );
+        if(CAQRFlag == 0)
+            GEQRF8( ctxt, m, n, A, lda, R, ldr, work, lwork );
+        if(CAQRFlag==2)
+            CAQR_256x128_TC(ctxt,m,n,A,lda,R,ldr,work);
         return 0;
     }
     
@@ -428,6 +438,7 @@ int RGEQRF2( cudaCtxt ctxt, int m, int n, float *A, int lda, float *R, int ldr, 
     // ==========update trailing matrix ==========
     
     float sone = 1.0, szero = 0;
+    float snegone= -1.0;
     // CUBLAS_CALL(cublasGemmEx(ctxt.cublas_handle, CUBLAS_OP_T, CUBLAS_OP_N, n/2, n/2, m,
     //                          &sone, A, CUDA_R_32F, lda, &A[n/2*lda], CUDA_R_32F, lda,
     //                          &szero, &R[n/2*ldr], CUDA_R_32F, ldr, CUDA_R_32F,
@@ -436,25 +447,36 @@ int RGEQRF2( cudaCtxt ctxt, int m, int n, float *A, int lda, float *R, int ldr, 
     // __half *Ah, *Bh, *Ch;
     // cudaMalloc( &Ah, sizeof(float)*m*n );
     // cudaMalloc( &Bh, sizeof(float)*m*n );
-    __half *Ah = hwork;
-    __half *Bh = &hwork[m*n/2];
-    dim3 gridDim((m+31)/32,(n+31)/32);
-    dim3 blockDim(32,32);
-    s2h<<<gridDim, blockDim>>>(m, n/2, A, m, Ah, m);
-    s2h<<<gridDim, blockDim>>>(m, n/2, &A[n/2*lda], m, Bh, m);
-    cublasGemmEx(ctxt.cublas_handle, CUBLAS_OP_T, CUBLAS_OP_N, n/2, n/2, m,
-    &sone, Ah, CUDA_R_16F, lda, Bh, CUDA_R_16F, lda,
-    &szero, &R[n/2*ldr], CUDA_R_32F, ldr, CUDA_R_32F,
-    CUBLAS_GEMM_DEFAULT_TENSOR_OP);
+    if(CAQRFlag != 3)
+    {
+        __half *Ah = hwork;
+        __half *Bh = &hwork[m*n/2];
+        dim3 gridDim((m+31)/32,(n+31)/32);
+        dim3 blockDim(32,32);
+        s2h<<<gridDim, blockDim>>>(m, n/2, A, m, Ah, m);
+        s2h<<<gridDim, blockDim>>>(m, n/2, &A[n/2*lda], m, Bh, m);
+        cublasGemmEx(ctxt.cublas_handle, CUBLAS_OP_T, CUBLAS_OP_N, n/2, n/2, m,
+                    &sone, Ah, CUDA_R_16F, lda, Bh, CUDA_R_16F, lda,
+                    &szero, &R[n/2*ldr], CUDA_R_32F, ldr, CUDA_R_32F,
+                    CUBLAS_GEMM_DEFAULT_TENSOR_OP);
     
-    float snegone= -1.0;
-    dim3 gridDim2( (n+31)/32, (n+31)/31 );
-    s2h<<<gridDim2, blockDim>>>(n/2, n/2, &R[n/2*ldr], ldr, Bh, n/2);
-    cublasGemmEx(ctxt.cublas_handle, CUBLAS_OP_N, CUBLAS_OP_N, m, n/2, n/2,
-    &snegone, Ah, CUDA_R_16F, m, Bh, CUDA_R_16F, n/2,
-    &sone, &A[n/2*lda], CUDA_R_32F, lda, CUDA_R_32F,
+        dim3 gridDim2( (n+31)/32, (n+31)/31 );
+        s2h<<<gridDim2, blockDim>>>(n/2, n/2, &R[n/2*ldr], ldr, Bh, n/2);
+        cublasGemmEx(ctxt.cublas_handle, CUBLAS_OP_N, CUBLAS_OP_N, m, n/2, n/2,
+                    &snegone, Ah, CUDA_R_16F, m, Bh, CUDA_R_16F, n/2,
+                    &sone, &A[n/2*lda], CUDA_R_32F, lda, CUDA_R_32F,
     // CUBLAS_GEMM_DEFAULT));
-    CUBLAS_GEMM_DEFAULT_TENSOR_OP);
+                    CUBLAS_GEMM_DEFAULT_TENSOR_OP);
+    }
+    else
+    {
+        cublasSgemm(ctxt.cublas_handle, CUBLAS_OP_T, CUBLAS_OP_N, n/2, n/2,m,
+                    &sone, A,lda, &A[n/2*lda],lda,
+                    &szero,&R[n/2*ldr],ldr);
+        cublasSgemm(ctxt.cublas_handle, CUBLAS_OP_N, CUBLAS_OP_N, m, n/2,n/2,
+                    &snegone, A,m, &R[n/2*ldr],n/2,
+                    &sone,&A[n/2*lda],lda);
+    }
     
     // right recurse
     RGEQRF2( ctxt, m, n/2, &A[n/2*lda], lda, &R[n/2+n/2*ldr], ldr, work, lwork, hwork, lhwork );
@@ -495,8 +517,9 @@ void checkResult(int m,int n,float* A,int lda, float *Q, int ldq, float *R, int 
 }
     
 
-void recursiveQR(int m,int n,float *hA,int lda)
+void recursiveQR(int m,int n,float *hA,int lda,int CAQR)
 {
+    CAQRFlag = CAQR;
     printf("Function recursive QR\n");
     cudaCtxt ctxt;
     cublasCreate( & ctxt.cublas_handle );
@@ -506,7 +529,7 @@ void recursiveQR(int m,int n,float *hA,int lda)
     int ldr = n;
     cudaMalloc(&A,sizeof(float)*m*n);
     cudaMemcpy( A, hA, sizeof(float)*m*n, cudaMemcpyHostToDevice );
-    printMatrixDevice("A.csv",m,n,A,m);
+    //printMatrixDevice("A.csv",m,n,A,m);
     
     cusolverDnSgeqrf_bufferSize(
         ctxt.cusolver_handle,
@@ -544,5 +567,5 @@ void recursiveQR(int m,int n,float *hA,int lda)
 
     checkOtho(m,n,Q,m);
     //printMatrixDevice("Q.csv",m,n,A,m);
-    printMatrixDevice("R.csv",n,n,R,n);
+    //printMatrixDevice("R.csv",n,n,R,n);
 }
