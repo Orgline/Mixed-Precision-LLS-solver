@@ -171,6 +171,96 @@ void CAQR_256x32(cudaCtxt ctxt, int m, int n, float *A, int lda, float *R, int l
 
 }
 
+void CAQR_256x128_TC(cudaCtxt ctxt, int m, int n, float *A, int lda, float *R, int ldr, float *work)
+{
+    //printf("Function CAQR_256x128_TC\n");
+    //printf("CAQR128: m, n, lda, ldr = %d, %d, %d, %d\n", m, n, lda, ldr);
+    if (m<256 || n!=128) 
+    {
+        printf("CAQR_256x128: ERROR: m must be > 256, n must be 128. (m,n)=(%d,%d)\n", m, n);
+    }
+    float sone = 1.0, szero = 0.0, snegone = -1.0;
+// QR left half 64
+    CAQR_256x32(ctxt, m, 32, A, lda, R, ldr, work);
+    /*
+    cublasSgemm(ctxt.cublas_handle, CUBLAS_OP_T, CUBLAS_OP_N,
+    32, 32, m,
+    &sone, A, lda,
+    &A[32*lda], lda,
+    &szero, &R[32*ldr], ldr);
+    cublasSgemm(ctxt.cublas_handle, CUBLAS_OP_N, CUBLAS_OP_N,
+    m, 32, 32,
+    &snegone, A, lda,
+    &R[32*ldr], ldr,
+    &sone, &A[32*lda], lda);*/
+    cublasGemmEx(ctxt.cublas_handle, CUBLAS_OP_T, CUBLAS_OP_N,
+        32, 32, m,
+        &sone, A, CUDA_R_16F,lda,
+        &A[32*lda], CUDA_R_16F,lda,
+        &szero, &R[32*ldr], CUDA_R_32F,ldr,
+        CUDA_R_32F,CUBLAS_GEMM_DEFAULT_TENSOR_OP);
+    cublasGemmEx(ctxt.cublas_handle, CUBLAS_OP_N, CUBLAS_OP_N,
+        m, 32, 32,
+        &snegone, A, CUDA_R_16F,lda,
+        &R[32*ldr], CUDA_R_16F,ldr,
+        &sone, &A[32*lda], CUDA_R_32F,lda,
+        CUDA_R_32F,CUBLAS_GEMM_DEFAULT_TENSOR_OP);
+
+    CAQR_256x32(ctxt, m, 32, &A[32*lda], lda, &R[32+32*ldr], ldr, work);
+// update trailing 64
+    /*
+    cublasSgemm(ctxt.cublas_handle, CUBLAS_OP_T, CUBLAS_OP_N,
+    64, 64, m,
+    &sone, A, lda,
+    &A[64*lda], lda,
+    &szero, &R[64*ldr], ldr);
+    cublasSgemm(ctxt.cublas_handle, CUBLAS_OP_N, CUBLAS_OP_N,
+    m, 64, 64,
+    &snegone, A, lda,
+    &R[64*ldr], ldr,
+    &sone, &A[64*lda], lda);*/
+    cublasGemmEx(ctxt.cublas_handle, CUBLAS_OP_T, CUBLAS_OP_N,
+        64, 64, m,
+        &sone, A, CUDA_R_32F,lda,
+        &A[64*lda], CUDA_R_16F,lda,
+        &szero, &R[64*ldr], CUDA_R_16F,ldr,
+        CUDA_R_32F,CUBLAS_GEMM_DEFAULT_TENSOR_OP);
+    cublasGemmEx(ctxt.cublas_handle, CUBLAS_OP_N, CUBLAS_OP_N,
+        m, 64, 64,
+        &snegone, A, CUDA_R_16F,lda,
+        &R[64*ldr], CUDA_R_16F,ldr,
+        &sone, &A[64*lda], CUDA_R_32F,lda,
+        CUDA_R_32F,CUBLAS_GEMM_DEFAULT_TENSOR_OP);
+
+// QR right half 64
+    A = &A[64*lda]; R = &R[64*ldr+64];
+    CAQR_256x32(ctxt, m, 32, A, lda, R, ldr, work);
+    /*
+    cublasSgemm(ctxt.cublas_handle, CUBLAS_OP_T, CUBLAS_OP_N,
+    32, 32, m,
+    &sone, A, lda,
+    &A[32*lda], lda,
+    &szero, &R[32*ldr], ldr);
+    cublasSgemm(ctxt.cublas_handle, CUBLAS_OP_N, CUBLAS_OP_N,
+    m, 32, 32,
+    &snegone, A, lda,
+    &R[32*ldr], ldr,
+    &sone, &A[32*lda], lda);*/
+    cublasGemmEx(ctxt.cublas_handle, CUBLAS_OP_T, CUBLAS_OP_N,
+        32, 32, m,
+        &sone, A, CUDA_R_16F,lda,
+        &A[32*lda], CUDA_R_16F,lda,
+        &szero, &R[32*ldr], CUDA_R_32F,ldr,
+        CUDA_R_32F,CUBLAS_GEMM_DEFAULT_TENSOR_OP);
+    cublasGemmEx(ctxt.cublas_handle, CUBLAS_OP_N, CUBLAS_OP_N,
+        m, 32, 32,
+        &snegone, A, CUDA_R_16F,lda,
+        &R[32*ldr], CUDA_R_16F,ldr,
+        &sone, &A[32*lda], CUDA_R_32F,lda,
+        CUDA_R_32F,CUBLAS_GEMM_DEFAULT_TENSOR_OP);
+    CAQR_256x32(ctxt, m, 32, &A[32*lda], lda, &R[32+32*ldr], ldr, work);
+}
+
 void CAQR_256x128(cudaCtxt ctxt, int m, int n, float *A, int lda, float *R, int ldr, float *work)
 {
     //printf("Function CAQR_256x128\n");
