@@ -126,6 +126,94 @@ __global__ void geqrf_tb_256x32_multicub(int m, int n, float *AA, int lda, float
     }
 }
 
+int GEQRF8( cudaCtxt ctxt, int m, int n, float *A, int lda, float *R, int ldr, float *work, int lwork )
+{
+	using namespace std;
+	int info;
+	cudaEvent_t start, stop;
+	cudaEventCreate(&start);
+	cudaEventCreate(&stop);
+
+	//TODO: move this out
+	int *devInfo;
+	cudaMalloc( &devInfo, sizeof(int) );
+	
+	cudaEventRecord(start);
+    cusolverStatus_t cusolver_status = cusolverDnSgeqrf(
+        ctxt.cusolver_handle, 
+        m, 
+        n, 
+        A, 
+        lda, 
+        &work[m*n], 
+        &work[m*n+n], 
+        lwork-n-m*n, 
+        devInfo);
+    cudaEventRecord(stop);
+	cudaEventSynchronize(stop);
+	assert(cusolver_status == CUSOLVER_STATUS_SUCCESS);
+	float milliseconds = 0;
+	cuEventElapsedTime(&milliseconds, start, stop);
+	ms_cusolver += milliseconds;
+	dim3 grid1( (n+31)/32, (n+31)/32 );
+	dim3 block1( 32, 32 );
+	myslacpy<<<grid1, block1>>>( n, n, A, lda, R, ldr );
+
+	cudaMemcpy(&info, devInfo, sizeof(int), cudaMemcpyDeviceToHost);
+	// cout << "GEQRF8: sgeqrf ("<< m<<","<<n<<") takes " << milliseconds << " (ms) "; 
+	// cout << "TLOPS/s: " << (2.0*m*n*n - 2.0/3*n*n*n)/milliseconds*1000/1e12; 
+	assert(info == 0);
+
+	// TODO: Move h_B assignment out
+	// float *h_B = (float*) malloc( m*NMIN * sizeof(float) );
+	
+	// for (int j=0; j<NMIN; j++)
+	// 	for (int i=0; i<m ; i++)
+	// 		if (i==j)
+	// 			h_B[i+j*m] = 1.0;
+	// 		else 
+	// 			h_B[i+j*m] = 0.0;
+	// cudaMemcpy( work, h_B, sizeof(float)*m*NMIN, cudaMemcpyHostToDevice);
+	dim3 grid2( (m+1)/32, (NMIN+1)/32 );
+	dim3 block2( 32, 32 );
+	seteye<<<grid2, block2>>>( m, NMIN, work, m );
+	
+	cudaEventRecord(start);
+	cusolver_status= cusolverDnSormqr(
+        ctxt.cusolver_handle, 
+        CUBLAS_SIDE_LEFT, 
+        CUBLAS_OP_N,
+        m, 
+        n,
+        n, 
+        A, 
+        lda,
+        &work[m*n],
+        work,
+        m,
+        &work[m*n+n],
+        lwork-n-m*n,
+        devInfo);
+	
+    // cudaError_t  cudaStat1 = cudaDeviceSynchronize();
+	cudaEventRecord(stop);
+	cudaEventSynchronize(stop);
+	cudaDeviceSynchronize();
+	cuEventElapsedTime(&milliseconds, start, stop);
+	ms_cusolver += milliseconds;
+	cudaMemcpy(&info, devInfo, sizeof(int), cudaMemcpyDeviceToHost);
+	// cout << " sormqr ("<< m<<","<<n<<") takes " << milliseconds << " (ms)" << endl;
+    assert(CUSOLVER_STATUS_SUCCESS == cusolver_status);
+	assert(info==0);
+	
+
+	dim3 grid((m+31)/32, (n+31)/32);
+	dim3 block( 32, 32 );
+	myslacpy<<<grid, block>>>( m, n, work, m, A, lda );
+
+	return info;
+}
+
 void CAQR_256x32(cudaCtxt ctxt, int m, int n, float *A, int lda, float *R, int ldr, float *work)
 {
     //printf("Function CAQR_256x32\n");
