@@ -1,6 +1,6 @@
 # Mixed-Precision-LLS-solver
 
-Run RMGSQR
+Run RGSQRF
 ```
 ./lls 1024 1024 1
 ```
